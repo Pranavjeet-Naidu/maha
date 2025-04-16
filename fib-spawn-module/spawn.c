@@ -6,8 +6,8 @@
 #include <linux/fs.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("ChatGPT");
-MODULE_DESCRIPTION("Fibonacci spawn pattern demonstration");
+MODULE_AUTHOR("grass");
+MODULE_DESCRIPTION("terminal goes brrr");
 static int fib_n = 3;
 module_param(fib_n, int, 0444);
 MODULE_PARM_DESC(fib_n, "Fibonacci index (0,1,2,3,...)");
@@ -15,20 +15,22 @@ MODULE_PARM_DESC(fib_n, "Fibonacci index (0,1,2,3,...)");
 static struct task_struct *worker;
 static int should_stop = 0;
 
+// Calculate Fibonacci value (we need this for determining how many to spawn)
+static int calculate_fib(int n)
+{
+    if (n < 2)
+        return n;
+    else
+        return calculate_fib(n-1) + calculate_fib(n-2);
+}
+
+
 
 static void spawn_fib(int n, int depth)
 {
-    /* Signal user-space with a command file - include depth information */
-    char cmd[64];
-    snprintf(cmd, sizeof(cmd), "echo 'SPAWN_GUI %d %d' > /tmp/fib_spawn_cmd", n, depth);
+    int fib_value;
+    int i;
     
-    char *argv[] = { "/bin/sh", "-c", cmd, NULL };
-    char *envp[] = {
-        "HOME=/root",
-        "PATH=/sbin:/bin:/usr/sbin:/usr/bin",
-        NULL
-    };
-
     /* Check if we should stop */
     if (should_stop) {
         return;
@@ -37,27 +39,52 @@ static void spawn_fib(int n, int depth)
     /* Print our position in the tree */
     {
         char buf[64];
-        int len = 0, i;
-        for (i = 0; i < depth; i++) buf[len++] = ' ';
+        int len = 0, j;
+        for (j = 0; j < depth; j++) buf[len++] = ' ';
         len += scnprintf(buf+len, sizeof(buf)-len, "fib(%d)\n", n);
         buf[len] = 0;
         printk(KERN_INFO "%s", buf);
     }
 
-    /* Always signal to user-space to show both internal nodes and leaves */
-    if (call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC) != 0)
-        printk(KERN_ERR "fib_spawn: failed to exec command\n");
+    /* Calculate the fibonacci value to determine how many to spawn */
+    fib_value = calculate_fib(n);
+    
+    /* Signal user-space with the Fibonacci value, depth, and node value */
+    {
+        char cmd[128]; // Increased buffer size
+        snprintf(cmd, sizeof(cmd), "echo 'SPAWN_GUI %d %d %d' > /tmp/fib_spawn_cmd", n, depth, fib_value);
+        
+        char *argv[] = { "/bin/sh", "-c", cmd, NULL };
+        char *envp[] = {
+            "HOME=/root",
+            "PATH=/sbin:/bin:/usr/sbin:/usr/bin",
+            NULL
+        };
+        
+        // Wait for the command to complete to ensure it's processed
+        if (call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC) != 0)
+            printk(KERN_ERR "fib_spawn: failed to exec command\n");
+        
+        // Add a short delay to ensure the launcher processes the command
+        msleep(200);
+    }
 
-    if (n < 2) {
-        /* Leaf node - just add a delay */
-        msleep(500);  // Longer delay to help with visualization
-    } else {
-        /* Internal node: recurse for fib(n-1) and fib(n-2) */
-        spawn_fib(n-1, depth+2);
-        if (should_stop) return;
-        spawn_fib(n-2, depth+2);
+    /* Add a delay for visualization */
+    msleep(800);  // Slightly shorter delay
+    
+    /* If not at the bottom level, spawn the next level */
+    if (n > 0) {
+        for (i = 0; i < fib_value && !should_stop; i++) {
+            // Make sure to pass the correct depth value
+            spawn_fib(n-1, depth+1);
+            
+            // Add delay between siblings
+            if (i < fib_value-1) msleep(200);
+        }
     }
 }
+
+
 /* Kernel thread entry point */
 static int fib_thread_fn(void *data)
 {
