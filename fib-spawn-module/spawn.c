@@ -4,6 +4,7 @@
 #include <linux/kmod.h>
 #include <linux/delay.h>
 #include <linux/fs.h>
+#include <linux/sched.h>   // For current->pid
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("grass");
@@ -24,24 +25,23 @@ static int calculate_fib(int n)
         return calculate_fib(n-1) + calculate_fib(n-2);
 }
 
-
-
 static void spawn_fib(int n, int depth)
 {
     int fib_value;
     int i;
+    pid_t kernel_pid = current->pid;
     
     /* Check if we should stop */
     if (should_stop) {
         return;
     }
 
-    /* Print our position in the tree */
+    /* Print our position in the tree along with kernel thread ID */
     {
-        char buf[64];
+        char buf[128];
         int len = 0, j;
         for (j = 0; j < depth; j++) buf[len++] = ' ';
-        len += scnprintf(buf+len, sizeof(buf)-len, "fib(%d)\n", n);
+        len += scnprintf(buf+len, sizeof(buf)-len, "fib(%d) [kernel_tid=%d]\n", n, kernel_pid);
         buf[len] = 0;
         printk(KERN_INFO "%s", buf);
     }
@@ -49,10 +49,11 @@ static void spawn_fib(int n, int depth)
     /* Calculate the fibonacci value to determine how many to spawn */
     fib_value = calculate_fib(n);
     
-    /* Signal user-space with the Fibonacci value, depth, and node value */
+    /* Signal user-space with the Fibonacci value, depth, node value, and kernel thread ID */
     {
-        char cmd[128]; // Increased buffer size
-        snprintf(cmd, sizeof(cmd), "echo 'SPAWN_GUI %d %d %d' > /tmp/fib_spawn_cmd", n, depth, fib_value);
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "echo 'SPAWN_GUI %d %d %d %d' > /tmp/fib_spawn_cmd", 
+                n, depth, fib_value, kernel_pid);
         
         char *argv[] = { "/bin/sh", "-c", cmd, NULL };
         char *envp[] = {
@@ -84,17 +85,17 @@ static void spawn_fib(int n, int depth)
     }
 }
 
-
 /* Kernel thread entry point */
 static int fib_thread_fn(void *data)
 {
-    printk(KERN_INFO "fib_spawn: starting fib(%d) pattern\n", fib_n);
+    pid_t kernel_tid = current->pid;
+    printk(KERN_INFO "fib_spawn: starting fib(%d) pattern in kernel thread %d\n", fib_n, kernel_tid);
     
     /* Allow thread to be stopped */
     while (!kthread_should_stop()) {
         should_stop = 0;
         spawn_fib(fib_n, 0);
-        printk(KERN_INFO "fib_spawn: done\n");
+        printk(KERN_INFO "fib_spawn: done in kernel thread %d\n", kernel_tid);
         
         /* Thread function complete, now wait to be stopped */
         set_current_state(TASK_INTERRUPTIBLE);
@@ -109,7 +110,7 @@ static int __init fib_spawn_init(void)
     printk(KERN_INFO "fib_spawn: module loaded, fib_n=%d\n", fib_n);
     
     /* Create initial command file */
-    char *argv[] = { "/bin/touch", "/tmp/fib_spawn_cmd", NULL };
+    char *argv[] = { "/bin/sh", "-c", "touch /tmp/fib_spawn_cmd; echo 'PID TRACKING LOG' > /tmp/fib_process_ids.log", NULL };
     char *envp[] = { "HOME=/root", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL };
     call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
     
